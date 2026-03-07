@@ -1,0 +1,67 @@
+name: Java CI with Maven & ECR
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # A button in UI to manually trigger
+
+# When a workflow runs, `GITHUB_TOKEN` is created 
+# `id-token: write` is strictly required for AWS OIDC authentication!
+permissions:
+  contents: read # cannot change code
+  id-token: write # request JWT token from GitHub to present to AWS OIDC provider
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven' # Not re-download dependencies if pom.xml hasn't changed
+
+      - name: Run Unit Tests
+        # Run in non-interactive mode (logs are less verbose)
+        run: ./mvnw -B test
+
+  build-and-push:
+    needs: test # Runs only if 'test' passes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU # Allow x86 runner to "emulate" an ARM chip
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::442042520911:role/pet-clinic-prod-github-actions
+          aws-region: us-east-1 # Extracted from your ECR URL
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile  
+          push: true # build *AND* push
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            442042520911.dkr.ecr.us-east-1.amazonaws.com/pet-clinic-prod-app:latest
+            442042520911.dkr.ecr.us-east-1.amazonaws.com/pet-clinic-prod-app:${{ github.run_number }}
+          cache-from: type=gha # Download unchanged layers
+          cache-to: type=gha,mode=max # Save new layers after building
